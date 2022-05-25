@@ -7,6 +7,7 @@ sys.path.append("../../../")
 import torch
 import random
 import numpy as np
+from predict import LeNet
 import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
@@ -50,7 +51,7 @@ class Adv_Training():
     """
     def __init__(self, device, file_path, target_label=None, epsilon=0.3, min_val=0, max_val=1):
         sys.path.append(file_path)
-        from predict import LeNet
+        # from predict import LeNet
         self.model = LeNet().to(device)
         self.epsilon = epsilon
         self.device = device
@@ -58,6 +59,8 @@ class Adv_Training():
         self.max_val = max_val
         self.target_label = target_label
         self.perturb = self.load_perturb("../attacker_list/nontarget_FGSM")
+        self.perturb_by_target_FGSM = self.load_perturb("../attacker_list/target_FGSM")
+        self.perturb_by_target_PGD  = self.load_perturb("../attacker_list/target_PGD")
 
     def load_perturb(self, attack_path):
         spec = importlib.util.spec_from_file_location('attack', attack_path + '/attack.py')
@@ -82,8 +85,14 @@ class Adv_Training():
                 inputs = inputs.to(device)
                 labels = labels.to(device)
                 # zero the parameter gradients
-                adv_inputs, _ = self.perturb.attack(inputs, labels.detach().cpu().tolist())
-                adv_inputs = torch.tensor(adv_inputs).to(device)
+                # get the attacked inputs total 3:
+                # adv_inputs1, _ = self.perturb.attack(inputs, labels.detach().cpu().tolist())
+                # adv_inputs1 = torch.tensor(adv_inputs1).to(device)
+                target_label = 0
+                # adv_inputs2, _ = self.perturb_by_target_FGSM.attack(inputs, labels.detach().cpu().tolist(), target_label)
+                # adv_inputs2 = torch.tensor(adv_inputs2).to(device)
+                adv_inputs3, _ = self.perturb_by_target_PGD.attack(inputs, labels.detach().cpu().tolist(), target_label)
+                adv_inputs3 = torch.tensor(adv_inputs3).to(device)
                 # zero the parameter gradients
                 optimizer.zero_grad()
                 outputs = self.model(inputs)
@@ -91,6 +100,34 @@ class Adv_Training():
                 loss.backward()
                 optimizer.step()
                 running_loss += loss.item()
+
+                # use three different attackers to get adv_inputs
+                # optimizer.zero_grad()
+                # adv_outputs = self.model(adv_inputs1)
+                # loss = criterion(adv_outputs, labels)*0.8
+                # loss.backward()
+                # optimizer.step()
+                # running_loss += loss.item()
+                
+                # optimizer.zero_grad()
+                # adv_outputs = self.model(adv_inputs2)
+                # loss = criterion(adv_outputs, labels)*0.8
+                # loss.backward()
+                # optimizer.step()
+                # running_loss += loss.item()
+
+                optimizer.zero_grad()
+                adv_outputs = self.model(adv_inputs3)
+                loss = criterion(adv_outputs, labels)*0.6
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item()
+
+                
+                # pred = torch.max(outputs, 1)
+                # correct += pred.eq(labels.view_as(pred)).sum().item()
+                
+                
             print('[%d, %5d] loss: %.3f' % (epoch + 1, i + 1, running_loss / dataset_size))
             running_loss = 0.0
         valloader = torch.utils.data.DataLoader(valset, batch_size=100, shuffle=True, num_workers=10)
@@ -109,7 +146,10 @@ class Adv_Training():
 
 
 def main():
+    ############################################################
+    # teacher model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device('cpu')
     adv_training = Adv_Training(device, file_path='.')
     dataset_configs = {
                 "name": "CIFAR10",
@@ -123,9 +163,19 @@ def main():
     dataset = get_dataset(dataset_configs)
     trainset = dataset['train']
     valset = dataset['val']
+    # use this testset to generate soft pred labels for the teacher model
     testset = dataset['test']
     adv_training.train(trainset, valset, device)
     torch.save(adv_training.model.state_dict(), "defense_project-model.pth")
+    ############################################################
+    # student model
+    
+    # teacher_model = LeNet().to(device)
+    # teacher_model.load_state_dict(torch.load("defense_homework-model.pth", map_location = 'cpu'))
+    # teacher_model.eval()
+    # for param in teacher_model.parameters():
+    #     print(param)
+    
 
 
 if __name__ == "__main__":
