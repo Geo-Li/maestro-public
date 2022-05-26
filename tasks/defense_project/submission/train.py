@@ -5,6 +5,7 @@ Please do not change the name of the functions in Adv_Training.
 import sys
 sys.path.append("../../../")
 import torch
+import copy
 import random
 import numpy as np
 from predict import LeNet
@@ -53,6 +54,9 @@ class Adv_Training():
         sys.path.append(file_path)
         # from predict import LeNet
         self.model = LeNet().to(device)
+        # initialize the teacher model to train the student model
+        teacher_model = LeNet().load_state_dict(torch.load(file_path+'/teacher-model.pth', map_location=self.device))
+        self.teacher_model = teacher_model.eval().to(device)
         self.epsilon = epsilon
         self.device = device
         self.min_val = min_val
@@ -82,51 +86,86 @@ class Adv_Training():
             running_loss = 0.0
             for i, (inputs, labels) in enumerate(trainloader, 0):
                 # get the inputs; data is a list of [inputs, labels]
+                # clean_labels = copy.deepcopy(labels)
+                # clean_inputs = copy.deepcopy(inputs)
+                # print(clean_labels_size)
                 inputs = inputs.to(device)
                 labels = labels.to(device)
-                # zero the parameter gradients
-                # get the attacked inputs total 3:
-                # adv_inputs1, _ = self.perturb.attack(inputs, labels.detach().cpu().tolist())
-                # adv_inputs1 = torch.tensor(adv_inputs1).to(device)
-                target_label = 0
-                # adv_inputs2, _ = self.perturb_by_target_FGSM.attack(inputs, labels.detach().cpu().tolist(), target_label)
-                # adv_inputs2 = torch.tensor(adv_inputs2).to(device)
-                adv_inputs3, _ = self.perturb_by_target_PGD.attack(inputs, labels.detach().cpu().tolist(), target_label)
-                adv_inputs3 = torch.tensor(adv_inputs3).to(device)
-                # zero the parameter gradients
+                
                 optimizer.zero_grad()
                 outputs = self.model(inputs)
+                teacher_outputs = self.teacher_model(inputs)
+                loss = criterion(teacher_outputs, labels)
+                alpha = 0.5; temp = 30
+                KL_loss = nn.KLDivLoss()
                 loss = criterion(outputs, labels)
+                loss = alpha * temp * temp * KL_loss(F.log_softmax(outputs/temp, dim = 1),F.softmax(teacher_outputs/temp, dim = 1)) + (1.0 - alpha) * loss
                 loss.backward()
                 optimizer.step()
                 running_loss += loss.item()
-
-                # use three different attackers to get adv_inputs
+                
+                
+            ############################################################
+            #           The Start of Teacher Training Coding           #
+            ############################################################
+                # we don't need to attack the image for distillation             
+                # zero the parameter gradients
                 # optimizer.zero_grad()
-                # adv_outputs = self.model(adv_inputs1)
-                # loss = criterion(adv_outputs, labels)*0.8
+                # outputs = self.model(inputs)
+                # loss = criterion(outputs, labels)
+                # loss.backward()
+                # optimizer.step()
+                # running_loss += loss.item()
+            ############################################################
+            #            The End of Teacher Training Coding            #
+            ############################################################
+
+
+            ############################################################
+            #           The Start of Detector Training Coding          #
+            ############################################################
+                # convert the clean label to all 0s
+                # clean_inputs = clean_inputs.to(device)
+                # clean_labels = clean_labels.to(device)
+                # clean_labels = clean_labels.detach().cpu().tolist()
+                # clean_labels = [0 for _ in range(len(clean_labels))]
+                # clean_labels = torch.tensor(clean_labels)
+                # clean_labels = clean_labels.to(device)
+                
+                # convert the attacked label to all 1s
+                # labels = labels.detach().cpu().tolist()
+                # labels = [1 for _ in range(len(labels))]
+                # labels = torch.tensor(labels)
+                # labels = labels.to(device)
+                
+                # get the attacked inputs 
+                # target_label = 1
+                
+                # adv_inputs1, _ = self.perturb.attack(inputs, labels.detach().cpu().tolist())
+                # adv_inputs1 = torch.tensor(adv_inputs1).to(device)
+                # adv_inputs2, _ = self.perturb_by_target_FGSM.attack(inputs, labels.detach().cpu().tolist(), target_label)
+                # adv_inputs2 = torch.tensor(adv_inputs2).to(device)
+                # adv_inputs3, _ = self.perturb_by_target_PGD.attack(inputs, labels.detach().cpu().tolist(), target_label)
+                # adv_inputs3 = torch.tensor(adv_inputs3).to(device)
+                # zero the parameter gradients
+                # optimizer.zero_grad()
+                # outputs = self.model(clean_inputs)
+                # loss = criterion(outputs, clean_labels)
                 # loss.backward()
                 # optimizer.step()
                 # running_loss += loss.item()
                 
+
+                # # use three different attackers to get adv_inputs
                 # optimizer.zero_grad()
-                # adv_outputs = self.model(adv_inputs2)
+                # adv_outputs = self.model(adv_inputs3)
                 # loss = criterion(adv_outputs, labels)*0.8
                 # loss.backward()
                 # optimizer.step()
                 # running_loss += loss.item()
-
-                optimizer.zero_grad()
-                adv_outputs = self.model(adv_inputs3)
-                loss = criterion(adv_outputs, labels)*0.6
-                loss.backward()
-                optimizer.step()
-                running_loss += loss.item()
-
-                
-                # pred = torch.max(outputs, 1)
-                # correct += pred.eq(labels.view_as(pred)).sum().item()
-                
+            ############################################################
+            #            The End of Detector Training Coding           #
+            ############################################################
                 
             print('[%d, %5d] loss: %.3f' % (epoch + 1, i + 1, running_loss / dataset_size))
             running_loss = 0.0
@@ -138,6 +177,7 @@ class Adv_Training():
                 inputs = inputs.to(device)
                 labels = labels.to(device)
                 outputs = self.model(inputs)
+                # print("outputs.data is", outputs.data)
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
@@ -149,7 +189,7 @@ def main():
     ############################################################
     # teacher model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device('cpu')
+    print(device)
     adv_training = Adv_Training(device, file_path='.')
     dataset_configs = {
                 "name": "CIFAR10",
@@ -166,16 +206,9 @@ def main():
     # use this testset to generate soft pred labels for the teacher model
     testset = dataset['test']
     adv_training.train(trainset, valset, device)
-    torch.save(adv_training.model.state_dict(), "defense_project-model.pth")
+    # torch.save(adv_training.model.state_dict(), "defense_project-model.pth")
+    torch.save(adv_training.model.state_dict(), "teacher-model.pth")
     ############################################################
-    # student model
-    
-    # teacher_model = LeNet().to(device)
-    # teacher_model.load_state_dict(torch.load("defense_homework-model.pth", map_location = 'cpu'))
-    # teacher_model.eval()
-    # for param in teacher_model.parameters():
-    #     print(param)
-    
 
 
 if __name__ == "__main__":
